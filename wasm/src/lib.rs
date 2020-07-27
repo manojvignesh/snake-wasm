@@ -1,10 +1,8 @@
-use js_sys::Array;
-use rand::Rng;
-use wasm_bindgen::prelude::*;
-use web_sys::console;
-
 mod utils;
 
+use wasm_bindgen::prelude::*;
+use rand::Rng;
+use js_sys::Array;
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
@@ -41,12 +39,12 @@ impl Vector {
         Vector { x, y }
     }
 
-    pub fn subtract(&self, other: &Vector) -> Vector {
-        Vector::new(self.x - other.x, self.y - other.y)
-    }
-
     pub fn add(&self, other: &Vector) -> Vector {
         Vector::new(self.x + other.x, self.y + other.y)
+    }
+
+    pub fn subtract(&self, other: &Vector) -> Vector {
+        Vector::new(self.x - other.x, self.y - other.y)
     }
 
     pub fn scale_by(&self, number: f64) -> Vector {
@@ -68,6 +66,10 @@ impl Vector {
     pub fn is_opposite(&self, other: &Vector) -> bool {
         let sum = self.add(other);
         sum.equal_to(&Vector::new(0_f64, 0_f64))
+    }
+
+    pub fn dot_product(&self, other: &Vector) -> f64 {
+        self.x * other.x + self.y * other.y
     }
 }
 
@@ -94,6 +96,14 @@ impl<'a> Segment<'a> {
         let second = Segment::new(point, self.end);
         are_equal(self.length(), first.length() + second.length())
     }
+
+    pub fn get_projected_point(&self, point: &Vector) -> Vector {
+        let vector = self.get_vector();
+        let diff = point.subtract(&self.start);
+        let u = diff.dot_product(&vector) / vector.dot_product(&vector);
+        let scaled = vector.scale_by(u);
+        self.start.add(&scaled)
+    }
 }
 
 fn get_segments_from_vectors(vectors: &[Vector]) -> Vec<Segment> {
@@ -110,7 +120,7 @@ fn get_food(width: i32, height: i32, snake: &[Vector]) -> Vector {
         for y in 0..height {
             let point = Vector::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
             if segments.iter().all(|s| !s.is_point_inside(&point)) {
-                free_positions.push(point);
+                free_positions.push(point)
             }
         }
     }
@@ -131,11 +141,12 @@ pub struct Game {
     pub width: i32,
     pub height: i32,
     pub speed: f64,
-    pub score: i32,
+    snake: Vec<Vector>,
     pub direction: Vector,
     pub food: Vector,
-    snake: Vec<Vector>,
+    pub score: i32,
 }
+
 
 #[wasm_bindgen]
 impl Game {
@@ -144,19 +155,40 @@ impl Game {
         let head_x = (f64::from(width) / 2_f64).round() - 0.5;
         let head_y = (f64::from(height) / 2_f64).round() - 0.5;
         let head = Vector::new(head_x, head_y);
-        let tail_tip = head.subtract(&direction.scale_by(f64::from(snake_length)));
-        let snake = vec![tail_tip, head];
+        let tailtip = head.subtract(&direction.scale_by(f64::from(snake_length)));
+        let snake = vec![tailtip, head];
         let food = get_food(width, height, &snake);
 
-        Game { width, height, speed, snake, direction, food, score: 0 }
+        Game {
+            width: width,
+            height: height,
+            speed: speed,
+            snake: snake,
+            direction: direction,
+            food: food,
+            score: 0,
+        }
     }
 
-    pub fn get_snake(&self) -> Array {
-        self.snake.clone().into_iter().map(JsValue::from).collect()
+    pub fn is_over(&self) -> bool {
+        let snake_len = self.snake.len();
+        let last = self.snake[snake_len - 1];
+        let Vector { x, y } = last;
+        if x < 0_f64 || x > f64::from(self.width) || y < 0_f64 || y > f64::from(self.height) {
+            return true;
+        }
+        if snake_len < 5 {
+            return false;
+        }
+
+        let segments = get_segments_from_vectors(&self.snake[..snake_len - 3]);
+        return segments.iter().any(|segment| {
+            let projected = segment.get_projected_point(&last);
+            segment.is_point_inside(&projected) && Segment::new(&last, &projected).length() < 0.5
+        });
     }
 
     fn process_movement(&mut self, timespan: f64, movement: Option<Movement>) {
-        console::log_1(&"Hello using web-sys".into());
         let distance = self.speed * timespan;
         let mut tail: Vec<Vector> = Vec::new();
         let mut snake_distance = distance;
@@ -177,15 +209,22 @@ impl Game {
         self.snake = tail;
         let old_head = self.snake.pop().unwrap();
         let new_head = old_head.add(&self.direction.scale_by(distance));
-
         if movement.is_some() {
             let new_direction = match movement.unwrap() {
-                Movement::TOP => Vector { x: 0_f64, y: -1_f64 },
+                Movement::TOP => Vector {
+                    x: 0_f64,
+                    y: -1_f64,
+                },
                 Movement::RIGHT => Vector { x: 1_f64, y: 0_f64 },
                 Movement::DOWN => Vector { x: 0_f64, y: 1_f64 },
-                Movement::LEFT => Vector { x: -1_f64, y: 0_f64 }
+                Movement::LEFT => Vector {
+                    x: -1_f64,
+                    y: 0_f64,
+                },
             };
-            if !self.direction.is_opposite(&new_direction) && !self.direction.equal_to(&new_direction) {
+            if !self.direction.is_opposite(&new_direction)
+                && !self.direction.equal_to(&new_direction)
+            {
                 let Vector { x: old_x, y: old_y } = old_head;
                 let old_x_rounded = old_x.round();
                 let old_y_rounded = old_y.round();
@@ -200,14 +239,19 @@ impl Game {
                     } else {
                         (old_y, old_y_rounded, new_y_rounded)
                     };
-                    let breakpoint_component = old_rounded + (if new_rounded > old_rounded { 0.5_f64 } else { -0.5_f64 });
+                    let breakpoint_component = old_rounded
+                        + (if new_rounded > old_rounded {
+                            0.5_f64
+                        } else {
+                            -0.5_f64
+                        });
                     let breakpoint = if rounded_x_changed {
                         Vector::new(breakpoint_component, old_y)
                     } else {
                         Vector::new(old_x, breakpoint_component)
                     };
-
-                    let vector = new_direction.scale_by(distance - (old - breakpoint_component).abs());
+                    let vector =
+                        new_direction.scale_by(distance - (old - breakpoint_component).abs());
                     let head = breakpoint.add(&vector);
 
                     self.snake.push(breakpoint);
@@ -217,7 +261,6 @@ impl Game {
                 }
             }
         }
-
         self.snake.push(new_head);
     }
 
@@ -239,5 +282,9 @@ impl Game {
     pub fn process(&mut self, timespan: f64, movement: Option<Movement>) {
         self.process_movement(timespan, movement);
         self.process_food();
+    }
+
+    pub fn get_snake(&self) -> Array {
+        self.snake.clone().into_iter().map(JsValue::from).collect()
     }
 }
